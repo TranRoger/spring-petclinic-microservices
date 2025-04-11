@@ -7,7 +7,6 @@ pipeline {
     environment {
         GIT_CREDENTIALS = credentials('github-token') // Configure this in Jenkins credentials
         COVERAGE_THRESHOLD = 70
-        SLACK_CHANNEL = '#your-slack-channel' // Optional
     }
 
     options {
