@@ -1,12 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
-         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
         <version>3.4.1</version>
+        <relativePath/>
     </parent>
 
     <groupId>org.springframework.samples</groupId>
@@ -28,21 +30,20 @@
 
     <properties>
         <java.version>17</java.version>
-
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+        
         <spring-cloud.version>2024.0.0</spring-cloud.version>
         <chaos-monkey-spring-boot.version>3.1.0</chaos-monkey-spring-boot.version>
         <jolokia-core.version>1.7.1</jolokia-core.version>
+        <jacoco.version>0.8.11</jacoco.version>
+        <maven-surefire-plugin.version>3.2.5</maven-surefire-plugin.version>
 
         <docker.image.prefix>springcommunity</docker.image.prefix>
         <docker.image.exposed.port>9090</docker.image.exposed.port>
         <docker.image.dockerfile.dir>${basedir}</docker.image.dockerfile.dir>
-        <!-- podman is also supported -->
         <container.executable>docker</container.executable>
-        <!-- By default, the OCI image is build for the linux/amd64 platform -->
-        <!-- For Apple Silicon M2 Chip you have to change it to the linux/arm64 -->
         <container.platform>linux/amd64</container.platform>
-        <!-- The -load option is a shortcut for or -output=type=docker -->
-        <!-- Could be changed by the -push option !-->
         <container.build.extraarg>--load</container.build.extraarg>
     </properties>
 
@@ -68,12 +69,71 @@
         </dependencies>
     </dependencyManagement>
 
+    <build>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>org.springframework.boot</groupId>
+                    <artifactId>spring-boot-maven-plugin</artifactId>
+                    <configuration>
+                        <excludes>
+                            <exclude>
+                                <groupId>org.projectlombok</groupId>
+                                <artifactId>lombok</artifactId>
+                            </exclude>
+                        </excludes>
+                    </configuration>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-compiler-plugin</artifactId>
+                    <version>3.13.0</version>
+                    <configuration>
+                        <source>${java.version}</source>
+                        <target>${java.version}</target>
+                        <compilerArgs>
+                            <arg>-parameters</arg>
+                        </compilerArgs>
+                    </configuration>
+                </plugin>
+                <plugin>
+                    <groupId>org.jacoco</groupId>
+                    <artifactId>jacoco-maven-plugin</artifactId>
+                    <version>${jacoco.version}</version>
+                    <executions>
+                        <execution>
+                            <goals>
+                                <goal>prepare-agent</goal>
+                            </goals>
+                        </execution>
+                        <execution>
+                            <id>report</id>
+                            <phase>test</phase>
+                            <goals>
+                                <goal>report</goal>
+                            </goals>
+                        </execution>
+                    </executions>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-surefire-plugin</artifactId>
+                    <version>${maven-surefire-plugin.version}</version>
+                    <configuration>
+                        <includes>
+                            <include>**/*Test.java</include>
+                        </includes>
+                    </configuration>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+    </build>
+
     <profiles>
         <profile>
             <id>springboot</id>
             <activation>
                 <file>
-                    <!-- Just a way to identify a Spring Boot application -->
                     <exists>src/main/resources/application.yml</exists>
                 </file>
             </activation>
@@ -84,7 +144,6 @@
                         <artifactId>spring-boot-maven-plugin</artifactId>
                         <executions>
                             <execution>
-                                <!-- Spring Boot Actuator displays build-related information if a META-INF/build-info.properties file is present -->
                                 <goals>
                                     <goal>build-info</goal>
                                 </goals>
@@ -98,11 +157,10 @@
                             </execution>
                         </executions>
                     </plugin>
-
-                    <!-- Spring Boot Actuator displays build-related information if a META-INF/build-info.properties file is present -->
                     <plugin>
                         <groupId>io.github.git-commit-id</groupId>
                         <artifactId>git-commit-id-maven-plugin</artifactId>
+                        <version>7.0.0</version>
                         <executions>
                             <execution>
                                 <goals>
@@ -122,6 +180,7 @@
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-enforcer-plugin</artifactId>
+                        <version>3.6.0</version>
                         <executions>
                             <execution>
                                 <id>enforce-java</id>
@@ -131,22 +190,9 @@
                                 <configuration>
                                     <rules>
                                         <requireJavaVersion>
-                                            <message>
-                                                🚫 Java version error: This project requires Java ${java.version} or higher.
-
-                                                Your current Java version is ${java.version}
-                                                To fix this:
-                                                1. Download and install Java 17 or higher from your preferred vendor
-                                                2. Make sure JAVA_HOME points to the new Java installation
-                                                3. Verify with 'java -version' command
-                                                4. Run the build again
-
-                                                For more information, check the project documentation.
-                                            </message>
-                                            <version>${java.version})</version>
+                                            <version>${java.version}</version>
                                         </requireJavaVersion>
                                     </rules>
-                                    <failFast>true</failFast>
                                 </configuration>
                             </execution>
                         </executions>
@@ -158,45 +204,76 @@
         <profile>
             <id>buildDocker</id>
             <build>
-                <pluginManagement>
-                    <plugins>
-                        <plugin>
-                            <groupId>org.codehaus.mojo</groupId>
-                            <artifactId>exec-maven-plugin</artifactId>
-                            <version>3.1.1</version>
-                            <executions>
-                                <execution>
-                                    <id>docker-build</id>
-                                    <phase>install</phase>
-                                    <goals>
-                                        <goal>exec</goal>
-                                    </goals>
-                                    <configuration>
-                                        <executable>${container.executable}</executable>
-                                        <workingDirectory>${docker.image.dockerfile.dir}</workingDirectory>
-                                        <arguments>
-                                            <argument>build</argument>
-                                            <argument>-f</argument>
-                                            <argument>Dockerfile</argument>
-                                            <argument>--build-arg</argument>
-                                            <argument>ARTIFACT_NAME=${project.build.finalName}</argument>
-                                            <argument>--build-arg</argument>
-                                            <argument>EXPOSED_PORT=${docker.image.exposed.port}</argument>
-                                            <argument>--platform</argument>
-                                            <argument>${container.platform}</argument>
-                                            <argument>${container.build.extraarg}</argument>
-                                            <argument>-t</argument>
-                                            <argument>${docker.image.prefix}/${project.artifactId}</argument>
-                                            <argument>${project.build.directory}</argument>
-                                        </arguments>
-                                    </configuration>
-                                </execution>
-                            </executions>
-                        </plugin>
-                    </plugins>
-                </pluginManagement>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <version>3.1.1</version>
+                        <executions>
+                            <execution>
+                                <id>docker-build</id>
+                                <phase>install</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>${container.executable}</executable>
+                                    <workingDirectory>${docker.image.dockerfile.dir}</workingDirectory>
+                                    <arguments>
+                                        <argument>build</argument>
+                                        <argument>-f</argument>
+                                        <argument>Dockerfile</argument>
+                                        <argument>--build-arg</argument>
+                                        <argument>ARTIFACT_NAME=${project.build.finalName}</argument>
+                                        <argument>--build-arg</argument>
+                                        <argument>EXPOSED_PORT=${docker.image.exposed.port}</argument>
+                                        <argument>--platform</argument>
+                                        <argument>${container.platform}</argument>
+                                        <argument>${container.build.extraarg}</argument>
+                                        <argument>-t</argument>
+                                        <argument>${docker.image.prefix}/${project.artifactId}</argument>
+                                        <argument>${project.build.directory}</argument>
+                                    </arguments>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <profile>
+            <id>coverage</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.jacoco</groupId>
+                        <artifactId>jacoco-maven-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>check-coverage</id>
+                                <goals>
+                                    <goal>check</goal>
+                                </goals>
+                                <configuration>
+                                    <rules>
+                                        <rule>
+                                            <element>BUNDLE</element>
+                                            <limits>
+                                                <limit>
+                                                    <counter>LINE</counter>
+                                                    <value>COVEREDRATIO</value>
+                                                    <minimum>0.70</minimum>
+                                                </limit>
+                                            </limits>
+                                        </rule>
+                                    </rules>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
             </build>
         </profile>
     </profiles>
-
 </project>
