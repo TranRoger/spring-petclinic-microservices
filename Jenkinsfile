@@ -2,109 +2,182 @@ pipeline {
     agent any
     
     tools {
-        maven 'M3' // Cần cấu hình Maven trong Global Tool Configuration
-        jdk 'jdk11' // Cần cấu hình JDK trong Global Tool Configuration
+        maven 'M3'
+        jdk 'jdk17'
     }
-    
+
+    environment {
+        COVERAGE_THRESHOLD = 70
+        GITHUB_REPO = 'https://github.com/TranRoger/spring-petclinic-microservices.git'
+    }
+
     stages {
-        stage('Checkout & Detect Changes') {
+        stage('Checkout') {
             steps {
-                checkout scm
-                script {
-                    // Xác định service bị thay đổi
-                    def changes = sh(script: "git diff --name-only HEAD~1", returnStdout: true).trim()
-                    env.CHANGED_SERVICES = getChangedServices(changes)
-                }
+                checkout([
+                    $class: 'GitSCM',
+                    branches: [[name: "*/${env.GIT_BRANCH}"]],
+                    extensions: [[$class: 'CleanBeforeCheckout']],
+                    userRemoteConfigs: [[
+                        url: env.GITHUB_REPO,
+                        credentialsId: 'github-token'
+                    ]]
+                ])
             }
         }
-        
-        stage('Build Changed Services') {
-            when {
-                expression { return env.CHANGED_SERVICES != 'all' && env.CHANGED_SERVICES != '' }
-            }
+
+        stage('Build') {
             steps {
                 script {
-                    def services = env.CHANGED_SERVICES.split(',')
-                    services.each { service ->
-                        echo "Building ${service}"
-                        sh "./mvnw clean package -DskipTests -pl :${service} -am"
+                    def changedServices = getChangedServices()
+                    
+                    if (changedServices.isEmpty()) {
+                        echo "Building all services"
+                        sh 'mvn clean package -DskipTests'
+                    } else {
+                        changedServices.each { service ->
+                            echo "Building ${service}"
+                            sh "mvn -pl spring-petclinic-${service} clean package -DskipTests"
+                        }
                     }
                 }
             }
         }
-        
-        stage('Build All') {
-            when {
-                expression { return env.CHANGED_SERVICES == 'all' }
-            }
-            steps {
-                sh './mvnw clean package -DskipTests'
-            }
-        }
-        
-        stage('Test Changed Services') {
-            when {
-                expression { return env.CHANGED_SERVICES != 'all' && env.CHANGED_SERVICES != '' }
-            }
+
+        stage('Test') {
             steps {
                 script {
-                    def services = env.CHANGED_SERVICES.split(',')
-                    services.each { service ->
-                        echo "Testing ${service}"
-                        sh "./mvnw test -pl :${service}"
-                        junit "**/${service}/target/surefire-reports/*.xml"
-                        jacoco execPattern: "**/${service}/target/jacoco.exec"
+                    def changedServices = getChangedServices()
+                    
+                    if (changedServices.isEmpty()) {
+                        echo "Testing all services"
+                        sh 'mvn test'
+                    } else {
+                        changedServices.each { service ->
+                            echo "Testing ${service}"
+                            sh "mvn -pl spring-petclinic-${service} test"
+                        }
                     }
                 }
             }
-        }
-        
-        stage('Test All') {
-            when {
-                expression { return env.CHANGED_SERVICES == 'all' }
+            
+            post {
+                always {
+                    junit '**/target/surefire-reports/*.xml'
+                    // Generate coverage reports in Cobertura format
+                    sh 'mvn cobertura:cobertura -Dcobertura.report.format=xml'
+                }
             }
+        }
+
+        stage('Coverage Report') {
             steps {
-                sh './mvnw test'
-                junit '**/target/surefire-reports/*.xml'
-                jacoco execPattern: '**/target/jacoco.exec'
+                script {
+                    publishCoverage(
+                        adapters: [
+                            coberturaAdapter(path: '**/target/site/cobertura/coverage.xml')
+                        ],
+                        sourceFileResolver: sourceFiles('NEVER_STORE')
+                    )
+                    
+                    // Check coverage thresholds
+                    def changedServices = getChangedServices()
+                    if (changedServices.isEmpty()) {
+                        changedServices = getAllServices()
+                    }
+                    
+                    changedServices.each { service ->
+                        checkServiceCoverage(service)
+                    }
+                }
             }
         }
     }
-    
+
     post {
         always {
-            // Xuất báo cáo JaCoCo
-            jacoco exclusionPattern: '**/target/classes/**',
-            sourceExclusionPattern: '**/src/test/**',
-            sourceInclusionPattern: '**/src/main/**'
-            
-            // Dọn dẹp workspace
             cleanWs()
+        }
+        success {
+            echo 'Pipeline completed successfully'
+        }
+        failure {
+            echo 'Pipeline failed'
         }
     }
 }
 
-def getChangedServices(String changes) {
+// ============= Utility Functions =============
+
+def getChangedServices() {
+    def changes = currentBuild.changeSets.collectMany { it.items.collectMany { it.affectedFiles.collect { it.path } } }
     if (changes.isEmpty()) {
-        return 'all'
+        return []
     }
     
     def serviceMap = [
-        'spring-petclinic-api-gateway': 'api-gateway',
+        'spring-petclinic-discovery-server': 'discovery-server',
+        'spring-petclinic-admin-server': 'admin-server',
         'spring-petclinic-customers-service': 'customers-service',
         'spring-petclinic-vets-service': 'vets-service',
         'spring-petclinic-visits-service': 'visits-service',
-        'spring-petclinic-config-server': 'config-server',
-        'spring-petclinic-discovery-server': 'discovery-server',
-        'spring-petclinic-admin-server': 'admin-server'
+        'spring-petclinic-api-gateway': 'api-gateway'
     ]
     
-    def changedServices = []
-    serviceMap.each { dir, service ->
-        if (changes.contains(dir)) {
-            changedServices.add(service)
+    def services = [] as Set
+    
+    changes.each { file ->
+        serviceMap.each { dir, service ->
+            if (file.startsWith(dir)) {
+                services.add(service)
+            }
+        }
+        
+        // Rebuild all if build config changes
+        if (file.contains('pom.xml') || file.contains('Jenkinsfile')) {
+            services.clear()
+            services.add('all')
+            return
         }
     }
     
-    return changedServices.isEmpty() ? 'all' : changedServices.join(',')
+    return services as List
+}
+
+def checkServiceCoverage(service) {
+    if (service == 'all') return
+    
+    def coverageFile = "spring-petclinic-${service}/target/site/cobertura/coverage.xml"
+    if (!fileExists(coverageFile)) {
+        echo "No coverage report found for ${service}"
+        return
+    }
+    
+    def coverage = getCoberturaCoverage(coverageFile)
+    echo "Coverage for ${service}: Line=${coverage.line}%, Branch=${coverage.branch}%"
+    
+    if (coverage.line < env.COVERAGE_THRESHOLD.toInteger()) {
+        unstable "Line coverage for ${service} (${coverage.line}%) is below ${env.COVERAGE_THRESHOLD}% threshold"
+    }
+}
+
+def getCoberturaCoverage(xmlFile) {
+    def report = readFile xmlFile
+    def metrics = new XmlSlurper().parseText(report).coverage[0].metrics[0]
+    
+    return [
+        line: metrics.@'line-rate'.toDouble() * 100,
+        branch: metrics.@'branch-rate'.toDouble() * 100
+    ]
+}
+
+def getAllServices() {
+    return [
+        'discovery-server',
+        'admin-server',
+        'customers-service',
+        'vets-service',
+        'visits-service',
+        'api-gateway'
+    ]
 }
