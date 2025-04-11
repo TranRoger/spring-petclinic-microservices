@@ -1,8 +1,4 @@
 pipeline {
-    agent {
-        label 'master' // or your agent label
-    }
-
     tools {
         maven 'M3'
         jdk 'jdk17' // Make sure this matches your Jenkins JDK configuration
