@@ -7,9 +7,7 @@ pipeline {
     }
 
     environment {
-        GIT_CREDENTIALS = credentials('github-token')
         COVERAGE_THRESHOLD = 70 // Strict 70% threshold
-        SLACK_CHANNEL = '#devops-alerts'
     }
 
     options {
