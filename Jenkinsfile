@@ -77,7 +77,7 @@ pipeline {
 
         stage('Test Services') {
             when {
-                expression { return !changedServicesd.isEmpty() }
+                expression { return !changedServices.isEmpty() }
             }
             steps {
                 script {
