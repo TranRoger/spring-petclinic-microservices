@@ -92,9 +92,6 @@ pipeline {
                             junit "**/${service}/target/surefire-reports/*.xml"
                         }
                     }
-                    
-                    // Generate aggregated report
-                    generateAggregateReport(servicesToCheck)
                 }
             }
         }
