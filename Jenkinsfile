@@ -1,3 +1,7 @@
+def changeFiles = []
+def changedServices = []
+def allServices = true
+
 pipeline {
     agent any
 
@@ -6,59 +10,88 @@ pipeline {
         jdk 'jdk17'
     }
 
-    environment {
-        COVERAGE_THRESHOLD = 70 // Strict 70% threshold
-    }
-
-    options {
-        buildDiscarder(logRotator(numToKeepStr: '10'))
-        timeout(time: 30, unit: 'MINUTES')
-        disableConcurrentBuilds()
-    }
-
     stages {
         stage('Checkout & Initialize') {
             steps {
-                checkout scm
-                sh 'mvn --version'
+                script {
+                    // Full depth checkout
+                    checkout([
+                        $class: 'GitSCM',
+                        branches: scm.branches,
+                        userRemoteConfigs: scm.userRemoteConfigs,
+                        extensions: [
+                            [$class: 'CloneOption', shallow: false, depth: 0]
+                        ]
+                    ])
+
+                    def targetBranch = env.CHANGE_TARGET ?: env.BRANCH_NAME
+                    sh "git fetch origin ${targetBranch}"
+
+                    def diffOutput = []
+
+                    if (env.CHANGE_TARGET) {
+                        // Pull request build using merge strategy
+                        echo "Detected PR build to '${env.CHANGE_TARGET}'. Comparing HEAD~2 (PR head) with HEAD (merged result)"
+                        diffOutput = sh(script: "git diff --name-only HEAD~2 HEAD", returnStdout: true).trim()
+                    } else {
+                        // Normal push to a branch
+                        echo "Detected branch push to '${env.BRANCH_NAME}. Comparing previous commit (HEAD~1) with current (HEAD)"
+                        diffOutput = sh(script: "git diff --name-only HEAD~1 HEAD", returnStdout: true).trim()
+                    }
+                    changeFiles = diffOutput ? diffOutput.split("\n").collect { it.trim() } : []
+
+                    echo "Changed files: \n${changeFiles.join('\n')}"
+
+                    changedServices = getChangedServices(changeFiles)
+                    echo "Changed services:\n${changedServices.join('\n')}"
+
+                    if (changedServices.isEmpty()) {
+                        skipBuild = true
+                        currentBuild.result = 'NOT_BUILT'
+                        echo "No changes detected - skipping build and test stages"
+                    }
+
+                    allServices = isFullBuild(changedServices)
+                }
             }
         }
 
-        stage('Build & Test') {
+        stage('Build services') {
+            when {
+                expression { return !changedServices.isEmpty() }
+            }
             steps {
                 script {
-                    def changedServices = getChangedServices()
-                    
-                    if (changedServices.isEmpty()) {
-                        echo "Building all services"
-                        sh 'mvn clean package'
+                    if (allServices) {
+                        echo "Full build triggered"
+                        sh './mvnw clean package -DskipTests'
                     } else {
                         changedServices.each { service ->
-                            echo "Building and testing ${service}"
-                            sh "mvn -pl spring-petclinic-${service} clean package"
+                            echo "Building ${serivce}"
+                            sh "./mvnw clean package -DskipTests -pl ${service} -am"
                         }
                     }
                 }
             }
         }
 
-        stage('Coverage Analysis') {
+        stage('Test Services') {
+            when {
+                expression { return !changedServices.isEmpty() }
+            }
             steps {
                 script {
-                    def changedServices = getChangedServices()
-                    def servicesToCheck = changedServices.isEmpty() ? getAllServices() : changedServices
-                    
-                    // Generate enhanced HTML reports
-                    sh 'mvn jacoco:report -Djacoco.destFile=aggregate.exec'
-                    
-                    // Process coverage for each service
-                    servicesToCheck.each { service ->
-                        def coverage = verifyCoverage(service)
-                        generateCoverageBadge(service, coverage)
+                    if (allServices) {
+                        echo "Testing all servicees"
+                        sh './mvnw test'
+                        junit '**/target/surefire-reports/*.xml'
+                    } else {
+                        changedServices.each { service -> 
+                            echo "Testing ${service}"
+                            sh "./mvnw test -pl :${service}"
+                            junit "**/${service}/target/surefire-reports/*.xml"
+                        }
                     }
-                    
-                    // Generate aggregated report
-                    generateAggregateReport(servicesToCheck)
                 }
             }
         }
@@ -66,145 +99,67 @@ pipeline {
 
     post {
         always {
-            // Publish consolidated test results
-            junit testResults: '**/target/surefire-reports/*.xml', allowEmptyResults: true
-            
-            // Archive HTML reports with better visualization
-            publishHTML target: [
-                allowMissing: true,
-                alwaysLinkToLastBuild: true,
-                keepAll: true,
-                reportDir: 'target/site/jacoco-aggregate',
-                reportFiles: 'index.html',
-                reportName: 'JaCoCo Coverage Report'
-            ]
-            
-            // Publish coverage badges
-            archiveArtifacts artifacts: 'coverage-badges/*.svg', allowEmptyArchive: true
-        }
-        
-        success {
-            slackSend(color: 'good', 
-                     message: "SUCCESS: ${env.JOB_NAME} #${env.BUILD_NUMBER}\n" +
-                     "Coverage: ${getCoverageSummary()}\n" +
-                     "Details: ${env.BUILD_URL}testReport/")
-        }
-        
-        unstable {
-            slackSend(color: 'warning',
-                     message: "UNSTABLE: ${env.JOB_NAME} #${env.BUILD_NUMBER}\n" +
-                     "Low Coverage: ${getCoverageSummary()}\n" +
-                     "Details: ${env.BUILD_URL}jacoco/")
+            script {
+                if (!changedServices.isEmpty()) {
+                    junit testResults: '**/target/surefire-reports/*xml', allowEmptyResults: true
+                    
+                    def coveragePattern = allServices ?
+                        '**/target/site/jacoco/jacoco.xml' :
+                        changedServices.collect {
+                            "**/${it}/target/site/jacoco/jacoco.xml"
+                        }.join(',')
+
+                    recordCoverage(
+                        tools: [[parser: 'JACOCO', pattern: coveragePattern]],
+                        
+                        // look for sources in any sub-dir that contains src/main/java
+
+                        sourceDirectories : [[path: 'glob:**/src/main/java']],
+                        sourceCodeRetention: 'MODIFIED',    // or NEVER | LAST_BUILD | EVERY_BUILD
+
+                        qualityGates: [[
+                            metric      :   'LINE',
+                            baseline    :   'PROJECT',
+                            threshold   :   70,
+                            criticality :   'FAILURE'       // fail build if < 70 % coverage
+                        ]]
+                    )
+                }
+            }
         }
     }
 }
 
-// ============= Enhanced Coverage Functions =============
-
-def getChangedServices() {
-    def changes = []
-    if (env.CHANGE_ID) {
-        def changeLogSets = currentBuild.changeSets
-        changes = changeLogSets.collectMany { it.items.collectMany { it.affectedFiles.collect { it.path } } }
-    } else {
-        changes = sh(script: 'git diff --name-only HEAD~1 HEAD', returnStdout: true).split('\n')
-    }
-    
+// Return List<String> of changed services
+def getChangedServices(List changes) {
     def serviceMap = [
-        'spring-petclinic-discovery-server': 'discovery-server',
-        'spring-petclinic-admin-server': 'admin-server',
-        // Add all other services...
+        'spring-petclinic-api-gateway'      : 'spring-petclinic-api-gateway',
+        'spring-petclinic-customers-service': 'spring-petclinic-customers-service',
+        'spring-petclinic-vets-service'     : 'spring-petclinic-vets-service',
+        'spring-petclinic-visits-service'   : 'spring-petclinic-visits-service',
+        'spring-petclinic-config-server'    : 'spring-petclinic-config-server',
+        'spring-petclinic-discovery-server' : 'spring-petclinic-discovery-server',
+        'spring-petclinic-admin-server'     : 'spring-petclinic-admin-server'
     ]
-    
-    def services = changes.collect { file ->
-        serviceMap.find { dir, _ -> file.startsWith(dir) }?.value
-    }.findAll().unique()
-    
-    return changes.any { it.contains('pom.xml') || it.contains('Jenkinsfile') } ? [] : services
-}
 
-def verifyCoverage(service) {
-    def reportFile = "spring-petclinic-${service}/target/site/jacoco/jacoco.csv"
-    if (!fileExists(reportFile)) {
-        error "No coverage report found for ${service}"
+    def services = []
+    changes.each { change -> 
+        serviceMap.each { dir, service ->
+            if (change.contains(dir) && !services.contains(service)) {
+                services << service
+            }
+        }
     }
-    
-    def report = readFile(reportFile)
-    def (missed, covered) = report.split('\n').tail().collect {
-        def cols = it.split(',')
-        [cols[3].toInteger(), cols[4].toInteger()]
-    }.transpose().collect { it.sum() }
-    
-    def coverage = (covered * 100) / (missed + covered)
-    coverage = coverage.round(2)
-    
-    if (coverage < env.COVERAGE_THRESHOLD.toInteger()) {
-        unstable("${service} coverage ${coverage}% < ${env.COVERAGE_THRESHOLD}% threshold")
+
+    if (changes.any { it.contains('pom.xml') || it.contains('Jenkinsfile') }) {
+        return ['ALL'] // trigger full build
     }
-    
-    return coverage
+
+    return services
+
 }
 
-def generateCoverageBadge(service, coverage) {
-    def color = coverage >= env.COVERAGE_THRESHOLD.toInteger() ? 'brightgreen' : 'red'
-    def badge = """
-    <svg xmlns="http://www.w3.org/2000/svg" width="120" height="20">
-        <linearGradient id="b" x2="0" y2="100%">
-            <stop offset="0" stop-color="#bbb" stop-opacity=".1"/>
-            <stop offset="1" stop-opacity=".1"/>
-        </linearGradient>
-        <mask id="a">
-            <rect width="120" height="20" rx="3" fill="#fff"/>
-        </mask>
-        <g mask="url(#a)">
-            <rect width="80" height="20" fill="#555"/>
-            <rect x="80" width="40" height="20" fill="#${color}"/>
-            <rect width="120" height="20" fill="url(#b)"/>
-        </g>
-        <text x="40" y="14" fill="#fff" text-anchor="middle" font-family="DejaVu Sans,Verdana,sans-serif" font-size="11">${service}</text>
-        <text x="100" y="14" fill="#fff" text-anchor="middle" font-family="DejaVu Sans,Verdana,sans-serif" font-size="11">${coverage}%</text>
-    </svg>
-    """
-    
-    sh "mkdir -p coverage-badges"
-    writeFile file: "coverage-badges/${service}-coverage.svg", text: badge
-}
-
-def generateAggregateReport(services) {
-    def totalMissed = 0
-    def totalCovered = 0
-    
-    services.each { service ->
-        def report = readFile("spring-petclinic-${service}/target/site/jacoco/jacoco.csv")
-        def (missed, covered) = report.split('\n').tail().collect {
-            def cols = it.split(',')
-            [cols[3].toInteger(), cols[4].toInteger()]
-        }.transpose().collect { it.sum() }
-        
-        totalMissed += missed
-        totalCovered += covered
-    }
-    
-    def aggregateCoverage = (totalCovered * 100) / (totalMissed + totalCovered)
-    generateCoverageBadge('aggregate', aggregateCoverage.round(2))
-}
-
-def getCoverageSummary() {
-    def badges = findFiles(glob: 'coverage-badges/*.svg')
-    return badges.collect { badge ->
-        def service = badge.name.replace('-coverage.svg', '')
-        def coverage = readFile(badge.path).split('>')[9].split('<')[0].replace('%', '')
-        "${service}: ${coverage}%"
-    }.join(', ')
-}
-
-def getAllServices() {
-    return [
-        'discovery-server',
-        'admin-server',
-        'customers-service',
-        'vets-service',
-        'visits-service',
-        'api-gateway'
-    ]
+// Helper function to detect full build flag
+def isFullBuild(List services) {
+    return services.size() == 1 && services[0] == 'ALL'
 }
