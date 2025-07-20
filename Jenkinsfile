@@ -11,7 +11,7 @@ pipeline {
     }
 
     stages {
-        stage('Checkout & Detect Changes') {
+        stage('Checkout & Initialize') {
             steps {
                 script {
                     // Full depth checkout
@@ -92,6 +92,9 @@ pipeline {
                             junit "**/${service}/target/surefire-reports/*.xml"
                         }
                     }
+                    
+                    // Generate aggregated report
+                    generateAggregateReport(servicesToCheck)
                 }
             }
         }
@@ -156,6 +159,7 @@ def getChangedServices(List changes) {
     }
 
     return services
+
 }
 
 // Helper function to detect full build flag
