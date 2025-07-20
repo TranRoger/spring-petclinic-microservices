@@ -110,10 +110,11 @@ pipeline {
                         }.join(',')
 
                     recordCoverage(
-                        tools: [[parser: 'JACOCO', pattern: coveragePattern]]
+                        tools: [[parser: 'JACOCO', pattern: coveragePattern]],
                         
                         // look for sources in any sub-dir that contains src/main/java
-                        sourceDirectories: [[path: 'glob:**/src/main/java']],
+
+                        sourceDirectories : [[path: 'glob:**/src/main/java']],
                         sourceCodeRetention: 'MODIFIED',    // or NEVER | LAST_BUILD | EVERY_BUILD
 
                         qualityGates: [[
